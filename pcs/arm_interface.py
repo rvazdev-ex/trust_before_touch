@@ -29,6 +29,16 @@ from config import (
 log = logging.getLogger(__name__)
 
 
+PCS_TO_LEROBOT = {
+    "sho_pan": "shoulder_pan",
+    "sho_lft": "shoulder_lift",
+    "elb": "elbow_flex",
+    "wri_fl": "wrist_flex",
+    "wri_rl": "wrist_roll",
+    "grip": "gripper",
+}
+
+
 # ── Data structures ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -325,8 +335,24 @@ class LeRobotArmInterface(ArmInterface):
     def command_joints(self, target: np.ndarray) -> None:
         if self._robot is None:
             raise RuntimeError(f"[{self.role}] Arm is not connected")
-        import torch
-        action = {"action": torch.tensor(target, dtype=torch.float32)}
+
+        # Leader is read-only in this wrapper; writes are follower-only.
+        if self.role == "leader":
+            log.debug("[%s] Ignoring command_joints write on leader", self.role)
+            return
+
+        action = {
+            f"{PCS_TO_LEROBOT[joint]}.pos": float(value)
+            for joint, value in zip(JOINT_NAMES, target.tolist())
+            if joint in PCS_TO_LEROBOT
+        }
+        if not action:
+            raise RuntimeError(
+                f"[{self.role}] Empty follower action payload after PCS→LeRobot mapping. "
+                f"Input joints={list(JOINT_NAMES)}"
+            )
+
+        log.debug("[%s] Sending follower action payload: %s", self.role, action)
         self._robot.send_action(action)
 
 
