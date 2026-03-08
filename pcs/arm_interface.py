@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -120,6 +121,9 @@ class ArmInterface(abc.ABC):
         self.config = config
         self.role = config.role
         self._connected = False
+        # Serialize robot bus I/O so background read loops cannot collide with
+        # foreground command writes on the same serial port.
+        self._io_lock = threading.RLock()
 
     # -- Lifecycle --
 
@@ -308,20 +312,21 @@ class LeRobotArmInterface(ArmInterface):
         if self._robot is None:
             raise RuntimeError(f"[{self.role}] Arm is not connected")
 
-        try:
-            if self.role == "leader":
-                payload = self._robot.get_action()
-            else:
-                payload = self._robot.get_observation()
-        except Exception as exc:
-            msg = str(exc).lower()
-            if self.role in {"prover", "verifier"} and "calibration" in msg and "registered" in msg:
-                cmd = self._calibration_help()
-                raise RuntimeError(
-                    f"[{self.role}] Missing LeRobot calibration for id='{self.config.id}' on port '{self.config.port}'. "
-                    f"Run: {cmd}"
-                ) from exc
-            raise
+        with self._io_lock:
+            try:
+                if self.role == "leader":
+                    payload = self._robot.get_action()
+                else:
+                    payload = self._robot.get_observation()
+            except Exception as exc:
+                msg = str(exc).lower()
+                if self.role in {"prover", "verifier"} and "calibration" in msg and "registered" in msg:
+                    cmd = self._calibration_help()
+                    raise RuntimeError(
+                        f"[{self.role}] Missing LeRobot calibration for id='{self.config.id}' on port '{self.config.port}'. "
+                        f"Run: {cmd}"
+                    ) from exc
+                raise
 
         if isinstance(payload, dict):
             log.debug("[%s] Raw LeRobot payload keys: %s", self.role, list(payload.keys()))
@@ -380,7 +385,8 @@ class LeRobotArmInterface(ArmInterface):
             )
 
         log.debug("[%s] send_action payload: %r", self.role, action)
-        self._robot.send_action(action)
+        with self._io_lock:
+            self._robot.send_action(action)
 
 
 # ── Mock / simulation implementation ─────────────────────────────────────────
