@@ -54,6 +54,7 @@ HOME_POSE_DEG = [0.0, 0.0, 0.0, 0.0, 0.0, 50.0]
 class ArmConfig:
     role: str           # "leader" | "prover" | "verifier"
     port: str           # e.g. "/dev/ttyACM0"
+    id: str             # Stable LeRobot id used for calibration lookup
     has_camera: bool = False
     camera_index: int = 0   # OpenCV camera index for wrist cam
     mock: bool = False       # True → run without real hardware (simulation)
@@ -74,17 +75,20 @@ DEFAULT_CONFIG = PCSConfig(
     leader=ArmConfig(
         role="leader",
         port="/dev/ttyACM0",
+        id="pcs_leader",
         mock=False,
     ),
     prover=ArmConfig(
         role="prover",
         port="/dev/ttyACM1",
+        id="pcs_prover",
         has_camera=False,
         mock=False,
     ),
     verifier=ArmConfig(
         role="verifier",
         port="/dev/ttyACM2",
+        id="pcs_verifier",
         has_camera=True,   # wrist camera
         camera_index=0,
         mock=False,
@@ -92,7 +96,7 @@ DEFAULT_CONFIG = PCSConfig(
 )
 
 MOCK_CONFIG = PCSConfig(
-    leader=ArmConfig(role="leader", port="mock", mock=True),
-    prover=ArmConfig(role="prover", port="mock", mock=True),
-    verifier=ArmConfig(role="verifier", port="mock", has_camera=True, mock=True),
+    leader=ArmConfig(role="leader", port="mock", id="pcs_leader", mock=True),
+    prover=ArmConfig(role="prover", port="mock", id="pcs_prover", mock=True),
+    verifier=ArmConfig(role="verifier", port="mock", id="pcs_verifier", has_camera=True, mock=True),
 )

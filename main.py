@@ -107,17 +107,20 @@ def build_config(args: argparse.Namespace) -> PCSConfig:
         leader=ArmConfig(
             role="leader",
             port=args.leader_port,
+            id="pcs_leader",
             mock=False,
         ),
         prover=ArmConfig(
             role="prover",
             port=args.prover_port,
+            id="pcs_prover",
             has_camera=False,
             mock=False,
         ),
         verifier=ArmConfig(
             role="verifier",
             port=args.verifier_port,
+            id="pcs_verifier",
             has_camera=not args.no_verifier_camera,
             camera_index=args.verifier_camera,
             mock=False,
