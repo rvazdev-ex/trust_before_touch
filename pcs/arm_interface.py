@@ -38,6 +38,15 @@ PCS_TO_LEROBOT = {
     "grip": "gripper",
 }
 
+VALID_LEROBOT_JOINTS = {
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "gripper",
+}
+
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
@@ -332,27 +341,45 @@ class LeRobotArmInterface(ArmInterface):
             return None
         return CameraFrame(image=frame, timestamp=time.monotonic())
 
-    def command_joints(self, target: np.ndarray) -> None:
+    def command_joints(self, target: np.ndarray | Dict[str, float]) -> None:
         if self._robot is None:
             raise RuntimeError(f"[{self.role}] Arm is not connected")
 
-        # Leader is read-only in this wrapper; writes are follower-only.
         if self.role == "leader":
-            log.debug("[%s] Ignoring command_joints write on leader", self.role)
-            return
+            raise RuntimeError("[leader] command_joints() should not be called on the teleoperator")
 
-        action = {
-            f"{PCS_TO_LEROBOT[joint]}.pos": float(value)
-            for joint, value in zip(JOINT_NAMES, target.tolist())
-            if joint in PCS_TO_LEROBOT
-        }
-        if not action:
-            raise RuntimeError(
-                f"[{self.role}] Empty follower action payload after PCS→LeRobot mapping. "
-                f"Input joints={list(JOINT_NAMES)}"
+        if isinstance(target, np.ndarray):
+            joints: Dict[str, float] = {
+                joint: float(value)
+                for joint, value in zip(JOINT_NAMES, target.tolist())
+            }
+        elif isinstance(target, dict):
+            joints = target
+        else:
+            raise TypeError(
+                f"[{self.role}] command_joints expects np.ndarray or dict, got {type(target).__name__}"
             )
 
-        log.debug("[%s] Sending follower action payload: %s", self.role, action)
+        action: Dict[str, float] = {}
+        ignored: List[object] = []
+        for joint_name, value in joints.items():
+            if joint_name in PCS_TO_LEROBOT:
+                full_name = PCS_TO_LEROBOT[joint_name]
+                action[f"{full_name}.pos"] = float(value)
+            elif joint_name in VALID_LEROBOT_JOINTS:
+                action[f"{joint_name}.pos"] = float(value)
+            elif isinstance(joint_name, str) and joint_name.endswith(".pos"):
+                action[joint_name] = float(value)
+            else:
+                ignored.append(joint_name)
+
+        if not action:
+            raise RuntimeError(
+                f"[{self.role}] Empty follower action payload after mapping. "
+                f"Input joints={list(joints.keys())!r}, ignored={ignored!r}"
+            )
+
+        log.debug("[%s] send_action payload: %r", self.role, action)
         self._robot.send_action(action)
 
 
