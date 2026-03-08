@@ -309,6 +309,15 @@ class PhysicalChallengeResponseSystem:
         # Background control loops
         self._loops: List[ArmLoopThread] = []
 
+        # Verifier camera preview / capture loop state
+        self._camera_stop = threading.Event()
+        self._camera_thread: Optional[threading.Thread] = None
+        self._camera_window = "PCS Verifier Camera"
+        self._cv2 = None
+        self._verifier_frame_lock = threading.Lock()
+        self._verifier_latest_frame: Optional[CameraFrame] = None
+        self._verifier_frames: List[CameraFrame] = []
+
     # -- Lifecycle ----------------------------------------------------------------
 
     def start(self) -> None:
@@ -320,11 +329,75 @@ class PhysicalChallengeResponseSystem:
             loop.start()
             self._loops.append(loop)
             log.info("  %s loop started", arm.role)
+
+        if self.verifier_arm.config.has_camera:
+            try:
+                import cv2
+
+                self._cv2 = cv2
+            except Exception as exc:
+                self._cv2 = None
+                log.warning("Verifier camera preview disabled (cv2 unavailable): %s", exc)
+            self._camera_stop.clear()
+            self._camera_thread = threading.Thread(
+                target=self._verifier_camera_preview_loop,
+                daemon=True,
+                name="verifier-camera-preview",
+            )
+            self._camera_thread.start()
+            log.info("  verifier camera preview started")
         log.info("All arms connected and running.")
+
+    def _verifier_camera_preview_loop(self) -> None:
+        while not self._camera_stop.is_set():
+            try:
+                frame = self.verifier_arm.read_camera()
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
+
+                with self._verifier_frame_lock:
+                    self._verifier_latest_frame = frame
+                    self._verifier_frames.append(frame)
+                    max_frames = int(self.cfg.control_hz * 120)  # keep 2 minutes
+                    if len(self._verifier_frames) > max_frames:
+                        self._verifier_frames = self._verifier_frames[-max_frames:]
+
+                if self._cv2 is not None:
+                    self._cv2.imshow(self._camera_window, frame.image)
+                    self._cv2.waitKey(1)
+            except TimeoutError:
+                continue
+            except Exception as exc:
+                if self._cv2 is not None and isinstance(exc, self._cv2.error):
+                    log.debug("[verifier-camera] preview unavailable: %s", exc)
+                    time.sleep(0.05)
+                    continue
+                log.debug("[verifier-camera] preview unavailable: %s", exc)
+                time.sleep(0.05)
+
+    def _stop_camera_preview(self) -> None:
+        self._camera_stop.set()
+        if self._camera_thread is not None:
+            self._camera_thread.join(timeout=2.0)
+            self._camera_thread = None
+        if self._cv2 is not None:
+            try:
+                self._cv2.destroyWindow(self._camera_window)
+            except Exception:
+                pass
+
+    def _snapshot_verifier_frames(self) -> List[CameraFrame]:
+        with self._verifier_frame_lock:
+            return list(self._verifier_frames)
 
     def stop(self) -> None:
         """Stop loops and disconnect all arms."""
         log.info("=== PCS stop ===")
+
+        # Stop camera read/preview thread before camera disconnect.
+        self._stop_camera_preview()
+
         for loop in self._loops:
             loop.stop()
         for loop in self._loops:
@@ -336,10 +409,9 @@ class PhysicalChallengeResponseSystem:
         except Exception as exc:
             log.warning("Error during disconnect of %s: %s", self.leader.role, exc)
 
-        # Followers can be moved to home before disconnect.
+        # Followers: disconnect directly (no motion command on shutdown).
         for arm in (self.prover, self.verifier_arm):
             try:
-                arm.go_home(duration_s=1.5)
                 arm.disconnect()
             except Exception as exc:
                 log.warning("Error during disconnect of %s: %s", arm.role, exc)
@@ -356,6 +428,9 @@ class PhysicalChallengeResponseSystem:
         """
         self._phase = Phase.CLAIM
         log.info("─── Phase 1: CLAIM ───")
+
+        with self._verifier_frame_lock:
+            self._verifier_frames.clear()
 
         prover_state = self.prover.read_state()
         log.info("[claim] Prover pose: %s", dict(zip(
@@ -399,25 +474,6 @@ class PhysicalChallengeResponseSystem:
         self._phase = Phase.RESPONSE
         log.info("─── Phase 3: RESPONSE ───")
 
-        # Start verifier observation thread
-        verifier_frames: List[CameraFrame] = []
-        stop_verifier_obs = threading.Event()
-
-        def _verifier_observe() -> None:
-            while not stop_verifier_obs.is_set():
-                if self.verifier_arm.config.has_camera:
-                    try:
-                        frame = self.verifier_arm.read_camera()
-                        if frame:
-                            verifier_frames.append(frame)
-                    except Exception as exc:
-                        log.debug("[verifier-obs] camera read error: %s", exc)
-                time.sleep(1.0 / self.cfg.control_hz)
-
-        obs_thread = threading.Thread(
-            target=_verifier_observe, daemon=True, name="verifier-obs"
-        )
-        obs_thread.start()
         log.info("[response] Prover executing challenge '%s'…", challenge.challenge_id)
 
         response = execute_response(
@@ -426,14 +482,14 @@ class PhysicalChallengeResponseSystem:
             timeout_s=self.cfg.challenge_timeout_s,
         )
 
-        stop_verifier_obs.set()
-        obs_thread.join(timeout=1.0)
+        verifier_frames = self._snapshot_verifier_frames()
 
         log.info(
-            "[response] Done. %.2fs elapsed, %d joint snapshots, %d camera frames",
+            "[response] Done. %.2fs elapsed, %d joint snapshots, %d prover camera frames, %d verifier camera frames",
             response.duration_s,
             len(response.joint_states),
             len(response.camera_frames),
+            len(verifier_frames),
         )
         time.sleep(INTERPHASE_PAUSE_S)
         return response, verifier_frames
