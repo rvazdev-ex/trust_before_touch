@@ -3,6 +3,7 @@ PCS configuration: ports, timing constants, trust thresholds.
 Edit ArmConfig entries to match your actual USB port assignments.
 """
 from dataclasses import dataclass, field
+from typing import Union
 
 # ── Control timing ────────────────────────────────────────────────────────────
 CONTROL_HZ: int = 50              # Joint command / read rate
@@ -56,7 +57,7 @@ class ArmConfig:
     port: str           # e.g. "/dev/ttyACM0"
     id: str             # Stable LeRobot id used for calibration lookup
     has_camera: bool = False
-    camera_index: int = 0   # OpenCV camera index for wrist cam
+    camera_index: Union[int, str] = 0   # OpenCV camera index or /dev/video* path
     mock: bool = False       # True → run without real hardware (simulation)
 
 
