@@ -245,6 +245,45 @@ def score_timing(challenge: Challenge, actual_states: List[JointState]) -> float
     return 0.5  # Unknown type: neutral score
 
 
+
+
+def _watermark_micromotion_score(frames: List[CameraFrame]) -> float:
+    """
+    Detect intentional servo-linked micro-movements from a red watermark marker.
+
+    In mock mode, the camera synthesizer embeds a tiny red patch that oscillates
+    with realistic phase drift. We track its centroid across frames and score
+    whether displacement is non-zero and temporally varying.
+    """
+    if len(frames) < 4:
+        return 0.0
+
+    centers: List[Tuple[float, float]] = []
+    for cf in frames:
+        img = cf.image
+        if img.ndim != 3 or img.shape[2] < 3:
+            continue
+        red = img[:, :, 2].astype(np.float32)
+        blue = img[:, :, 0].astype(np.float32)
+        green = img[:, :, 1].astype(np.float32)
+        mask = (red > 180) & (blue < 80) & (green < 80)
+        if not np.any(mask):
+            continue
+        ys, xs = np.where(mask)
+        centers.append((float(xs.mean()), float(ys.mean())))
+
+    if len(centers) < 4:
+        return 0.0
+
+    pts = np.array(centers, dtype=float)
+    deltas = np.diff(pts, axis=0)
+    speeds = np.linalg.norm(deltas, axis=1)
+    if len(speeds) == 0:
+        return 0.0
+
+    move_strength = float(np.clip(speeds.mean() / 2.0, 0.0, 1.0))
+    temporal_variation = float(np.clip(speeds.std() / 0.8, 0.0, 1.0))
+    return float(0.65 * move_strength + 0.35 * temporal_variation)
 # ── Visual scoring ────────────────────────────────────────────────────────────
 
 def score_visual(
@@ -293,7 +332,13 @@ def score_visual(
     stability = 1.0 - float(arr_norm.std())
     stability = max(0.0, stability)
 
-    visual = 0.6 * mean_presence + 0.4 * stability
+    visual_presence = 0.6 * mean_presence + 0.4 * stability
+
+    # Physical watermark check: intentional micro-motions from verifier camera.
+    watermark = _watermark_micromotion_score(all_frames)
+
+    # Blend classic presence scoring with watermark dynamics.
+    visual = 0.75 * visual_presence + 0.25 * watermark
     return float(np.clip(visual, 0.0, 1.0))
 
 

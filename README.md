@@ -174,6 +174,7 @@ The `MockArmInterface` provides full software simulation:
 - First-order joint dynamics with a 0.15s time constant
 - Simulated servo lag and encoder quantization noise
 - Synthetic camera frames with green-blob object detection
+- Physical watermark demo: intentional red marker servo micro-movements for verifier-camera liveness checks
 - Deterministic enough for testing, noisy enough to be realistic
 
 ---
