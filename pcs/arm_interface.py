@@ -253,17 +253,47 @@ class LeRobotArmInterface(ArmInterface):
 
         log.info("[%s] Disconnected", self.role)
 
+    def _extract_joint_state(self, payload: dict) -> Dict[str, float]:
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"[{self.role}] Expected dict payload, got {type(payload).__name__}")
+
+        joint_state = payload.get("joint_state")
+        if isinstance(joint_state, dict):
+            return {str(k): float(v) for k, v in joint_state.items()}
+
+        flat_state = {
+            k.removesuffix(".pos"): float(v)
+            for k, v in payload.items()
+            if isinstance(k, str) and k.endswith(".pos")
+        }
+        if flat_state:
+            return flat_state
+
+        expected = {
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_roll",
+            "gripper",
+        }
+        bare_state = {k: float(v) for k, v in payload.items() if k in expected}
+        if bare_state:
+            return bare_state
+
+        raise RuntimeError(
+            f"[{self.role}] No joint state found in LeRobot payload. Keys={list(payload.keys())}"
+        )
+
     def read_state(self) -> JointState:
         if self._robot is None:
             raise RuntimeError(f"[{self.role}] Arm is not connected")
 
         try:
             if self.role == "leader":
-                obs = self._robot.get_action()
-                state_tensor = obs.get("action")
+                payload = self._robot.get_action()
             else:
-                obs = self._robot.get_observation()
-                state_tensor = obs.get("observation.state", obs.get("state"))
+                payload = self._robot.get_observation()
         except Exception as exc:
             msg = str(exc).lower()
             if self.role in {"prover", "verifier"} and "calibration" in msg and "registered" in msg:
@@ -274,15 +304,13 @@ class LeRobotArmInterface(ArmInterface):
                 ) from exc
             raise
 
-        if state_tensor is None:
-            raise RuntimeError(f"[{self.role}] No joint state found in LeRobot payload")
-
-        if hasattr(state_tensor, "numpy"):
-            positions = state_tensor.numpy().astype(float)
+        if isinstance(payload, dict):
+            log.debug("[%s] Raw LeRobot payload keys: %s", self.role, list(payload.keys()))
         else:
-            positions = np.array(state_tensor, dtype=float)
+            log.debug("[%s] Raw LeRobot payload type: %s", self.role, type(payload).__name__)
 
-        positions = positions.flatten()[:NUM_JOINTS]
+        joint_state = self._extract_joint_state(payload)
+        positions = np.array([joint_state[name] for name in JOINT_NAMES], dtype=float)
         return JointState(positions=positions, timestamp=time.monotonic())
 
     def read_camera(self) -> Optional[CameraFrame]:
