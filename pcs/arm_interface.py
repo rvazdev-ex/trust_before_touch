@@ -272,6 +272,8 @@ class MockArmInterface(ArmInterface):
     # Servo time-constant: how quickly the simulated joint tracks its target.
     # At CONTROL_HZ = 50 Hz with TC = 0.15 s, alpha ≈ 0.13 per step.
     TIME_CONSTANT_S: float = 0.15
+    WATERMARK_FREQ_HZ: float = 4.0
+    WATERMARK_PIXELS: int = 4
 
     def __init__(self, config: ArmConfig, initial_pose: Optional[np.ndarray] = None):
         super().__init__(config)
@@ -280,6 +282,7 @@ class MockArmInterface(ArmInterface):
         )
         self._q_target = self._q.copy()
         self._alpha = 1.0 - np.exp(-1.0 / (self.TIME_CONSTANT_S * CONTROL_HZ))
+        self._watermark_phase = 0.0
 
     def connect(self) -> None:
         self._connected = True
@@ -295,6 +298,7 @@ class MockArmInterface(ArmInterface):
         # Add tiny noise to simulate encoder quantisation
         self._q += np.random.normal(0, 0.05, size=NUM_JOINTS)
         self._q = clip_to_limits(self._q)
+        self._watermark_phase += 2.0 * np.pi * self.WATERMARK_FREQ_HZ / CONTROL_HZ
 
     def read_state(self) -> JointState:
         self._step_dynamics()
@@ -303,13 +307,28 @@ class MockArmInterface(ArmInterface):
     def read_camera(self) -> Optional[CameraFrame]:
         if not self.config.has_camera:
             return None
-        # Synthetic 120×160 BGR frame: grey background + a coloured "object" blob.
+        # Synthetic 120×160 BGR frame: grey background + coloured object blob.
         # Drawn with pure numpy (no cv2 dependency) so mock mode needs no extra installs.
         frame = np.full((120, 160, 3), 128, dtype=np.uint8)
         cy, cx, r = 60, 80, 18
         ys, xs = np.ogrid[:120, :160]
         mask = (xs - cx) ** 2 + (ys - cy) ** 2 <= r ** 2
         frame[mask] = [30, 200, 60]  # green blob (BGR)
+
+        # Add physical watermark demo: tiny red marker that intentionally
+        # micro-moves with a sinusoid + servo-load perturbation.
+        # The verifier uses this to detect that observed motion has a
+        # physically plausible temporal signature, not a static replay.
+        servo_error = float(np.mean(np.abs(self._q_target - self._q)))
+        amp_px = 2.0 + min(2.0, servo_error / 15.0)
+        wx = 130 + int(round(amp_px * np.sin(self._watermark_phase)))
+        wy = 25 + int(round(amp_px * np.cos(self._watermark_phase)))
+
+        wy0 = max(0, wy - self.WATERMARK_PIXELS)
+        wy1 = min(frame.shape[0], wy + self.WATERMARK_PIXELS + 1)
+        wx0 = max(0, wx - self.WATERMARK_PIXELS)
+        wx1 = min(frame.shape[1], wx + self.WATERMARK_PIXELS + 1)
+        frame[wy0:wy1, wx0:wx1] = [20, 20, 240]  # red watermark patch (BGR)
         return CameraFrame(image=frame, timestamp=time.monotonic())
 
     def command_joints(self, target: np.ndarray) -> None:
