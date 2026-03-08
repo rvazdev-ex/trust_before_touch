@@ -50,6 +50,11 @@ def setup_logging(verbose: bool = False) -> None:
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
+    def parse_camera_source(value: str) -> int | str:
+        if value.isdigit():
+            return int(value)
+        return value
+
     p = argparse.ArgumentParser(
         description="Physical Challenge–Response System for SO-101 robot arms",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -81,8 +86,9 @@ def parse_args() -> argparse.Namespace:
         help="Serial port for the Verifier arm.",
     )
     p.add_argument(
-        "--verifier-camera", type=int, default=0, metavar="IDX",
-        help="OpenCV camera index for the Verifier wrist cam (default: 0).",
+        "--verifier-camera", type=parse_camera_source,
+        default=DEFAULT_CONFIG.verifier.camera_index, metavar="INDEX_OR_PATH",
+        help="OpenCV camera index or /dev/video* path for the Verifier wrist cam (default: 0).",
     )
     p.add_argument(
         "--no-verifier-camera", action="store_true",

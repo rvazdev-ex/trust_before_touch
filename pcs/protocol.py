@@ -329,7 +329,15 @@ class PhysicalChallengeResponseSystem:
             loop.stop()
         for loop in self._loops:
             loop.join(timeout=2.0)
-        for arm in (self.leader, self.prover, self.verifier_arm):
+
+        # Leader is a teleoperator: disconnect only (no motion commands).
+        try:
+            self.leader.disconnect()
+        except Exception as exc:
+            log.warning("Error during disconnect of %s: %s", self.leader.role, exc)
+
+        # Followers can be moved to home before disconnect.
+        for arm in (self.prover, self.verifier_arm):
             try:
                 arm.go_home(duration_s=1.5)
                 arm.disconnect()

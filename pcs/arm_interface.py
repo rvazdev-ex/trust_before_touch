@@ -247,7 +247,7 @@ class LeRobotArmInterface(ArmInterface):
 
                 self._camera = cv2.VideoCapture(self.config.camera_index)
                 if not self._camera.isOpened():
-                    log.warning("[%s] Could not open camera index %d", self.role, self.config.camera_index)
+                    log.warning("[%s] Could not open camera source %s", self.role, self.config.camera_index)
                     self._camera = None
 
             self._connected = True
