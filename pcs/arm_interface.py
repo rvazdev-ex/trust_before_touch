@@ -212,7 +212,7 @@ class LeRobotArmInterface(ArmInterface):
     def __init__(self, config: ArmConfig):
         super().__init__(config)
         self._robot = None
-        self._camera = None   # OpenCV VideoCapture for wrist cam
+        self._camera = None   # OpenCV VideoCapture or LeRobot OpenCVCamera
 
     def _calibration_help(self) -> str:
         if self.role == "leader":
@@ -243,11 +243,20 @@ class LeRobotArmInterface(ArmInterface):
             log.info("[%s] Connected to %s (id=%s)", self.role, config.port, config.id)
 
             if self.config.has_camera:
-                import cv2
+                try:
+                    from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
+                    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 
-                self._camera = cv2.VideoCapture(self.config.camera_index)
-                if not self._camera.isOpened():
-                    log.warning("[%s] Could not open camera source %s", self.role, self.config.camera_index)
+                    cam_cfg = OpenCVCameraConfig(index_or_path=self.config.camera_index)
+                    self._camera = OpenCVCamera(cam_cfg)
+                    self._camera.connect()
+                except Exception as exc:
+                    log.warning(
+                        "[%s] Failed to connect LeRobot camera %s: %s",
+                        self.role,
+                        self.config.camera_index,
+                        exc,
+                    )
                     self._camera = None
 
             self._connected = True
@@ -270,7 +279,10 @@ class LeRobotArmInterface(ArmInterface):
 
         if camera is not None:
             try:
-                camera.release()
+                if hasattr(camera, "disconnect"):
+                    camera.disconnect()
+                else:
+                    camera.release()
             except Exception as exc:
                 log.warning("[%s] Camera release error: %s", self.role, exc)
 
@@ -340,11 +352,16 @@ class LeRobotArmInterface(ArmInterface):
     def read_camera(self) -> Optional[CameraFrame]:
         if self._camera is None:
             return None
-        import cv2
-        ret, frame = self._camera.read()
-        if not ret:
+        try:
+            if hasattr(self._camera, "async_read"):
+                frame = self._camera.async_read(timeout_ms=100)
+            else:
+                ret, frame = self._camera.read()
+                if not ret:
+                    return None
+            return CameraFrame(image=frame, timestamp=time.monotonic())
+        except TimeoutError:
             return None
-        return CameraFrame(image=frame, timestamp=time.monotonic())
 
     def command_joints(self, target: np.ndarray | Dict[str, float]) -> None:
         if self._robot is None:
