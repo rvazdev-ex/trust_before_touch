@@ -184,62 +184,104 @@ class ArmInterface(abc.ABC):
 # ── Real hardware implementation ──────────────────────────────────────────────
 
 class LeRobotArmInterface(ArmInterface):
-    """
-    Controls a physical SO-101 arm via the LeRobot library.
-
-    Leader arm  → lerobot.robots.so_leader.SO101Leader
-    Follower arm → lerobot.robots.so_follower.SO101Follower
-
-    Both expose the same get_observation() / send_action() interface.
-    """
+    """Controls a physical SO-101 arm via the LeRobot leader/follower APIs."""
 
     def __init__(self, config: ArmConfig):
         super().__init__(config)
         self._robot = None
         self._camera = None   # OpenCV VideoCapture for wrist cam
 
+    def _calibration_help(self) -> str:
+        if self.role == "leader":
+            return (
+                "python -m lerobot.calibrate "
+                f"--teleop.type=so101_leader --teleop.port={self.config.port} --teleop.id={self.config.id}"
+            )
+        return (
+            "python -m lerobot.calibrate "
+            f"--robot.type=so101_follower --robot.port={self.config.port} --robot.id={self.config.id}"
+        )
+
     def connect(self) -> None:
-        if config := self.config:
+        config = self.config
+        try:
             if config.role == "leader":
                 from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
-                robot_cfg = SO101LeaderConfig(port=config.port, id=f"pcs_{config.role}")
+
+                robot_cfg = SO101LeaderConfig(port=config.port, id=config.id)
                 self._robot = SO101Leader(robot_cfg)
             else:
                 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
-                robot_cfg = SO101FollowerConfig(port=config.port, id=f"pcs_{config.role}")
+
+                robot_cfg = SO101FollowerConfig(port=config.port, id=config.id)
                 self._robot = SO101Follower(robot_cfg)
 
             self._robot.connect(calibrate=False)
-            log.info("[%s] Connected to %s", self.role, config.port)
+            log.info("[%s] Connected to %s (id=%s)", self.role, config.port, config.id)
 
-        if self.config.has_camera:
-            import cv2
-            self._camera = cv2.VideoCapture(self.config.camera_index)
-            if not self._camera.isOpened():
-                log.warning("[%s] Could not open camera index %d", self.role, self.config.camera_index)
-                self._camera = None
+            if self.config.has_camera:
+                import cv2
 
-        self._connected = True
+                self._camera = cv2.VideoCapture(self.config.camera_index)
+                if not self._camera.isOpened():
+                    log.warning("[%s] Could not open camera index %d", self.role, self.config.camera_index)
+                    self._camera = None
+
+            self._connected = True
+        except Exception:
+            self.disconnect()
+            raise
 
     def disconnect(self) -> None:
-        if self._robot is not None:
-            self._robot.disconnect()
-            self._robot = None
-        if self._camera is not None:
-            self._camera.release()
-            self._camera = None
+        robot = self._robot
+        camera = self._camera
+        self._robot = None
+        self._camera = None
         self._connected = False
+
+        if robot is not None:
+            try:
+                robot.disconnect()
+            except Exception as exc:
+                log.warning("[%s] Robot disconnect error: %s", self.role, exc)
+
+        if camera is not None:
+            try:
+                camera.release()
+            except Exception as exc:
+                log.warning("[%s] Camera release error: %s", self.role, exc)
+
         log.info("[%s] Disconnected", self.role)
 
     def read_state(self) -> JointState:
-        obs = self._robot.get_observation()
-        # LeRobot returns observation.state as a torch.Tensor or numpy array
-        state_tensor = obs.get("observation.state", obs.get("state"))
+        if self._robot is None:
+            raise RuntimeError(f"[{self.role}] Arm is not connected")
+
+        try:
+            if self.role == "leader":
+                obs = self._robot.get_action()
+                state_tensor = obs.get("action")
+            else:
+                obs = self._robot.get_observation()
+                state_tensor = obs.get("observation.state", obs.get("state"))
+        except Exception as exc:
+            msg = str(exc).lower()
+            if self.role in {"prover", "verifier"} and "calibration" in msg and "registered" in msg:
+                cmd = self._calibration_help()
+                raise RuntimeError(
+                    f"[{self.role}] Missing LeRobot calibration for id='{self.config.id}' on port '{self.config.port}'. "
+                    f"Run: {cmd}"
+                ) from exc
+            raise
+
+        if state_tensor is None:
+            raise RuntimeError(f"[{self.role}] No joint state found in LeRobot payload")
+
         if hasattr(state_tensor, "numpy"):
             positions = state_tensor.numpy().astype(float)
         else:
             positions = np.array(state_tensor, dtype=float)
-        # Flatten in case it comes as (1, N)
+
         positions = positions.flatten()[:NUM_JOINTS]
         return JointState(positions=positions, timestamp=time.monotonic())
 
@@ -253,6 +295,8 @@ class LeRobotArmInterface(ArmInterface):
         return CameraFrame(image=frame, timestamp=time.monotonic())
 
     def command_joints(self, target: np.ndarray) -> None:
+        if self._robot is None:
+            raise RuntimeError(f"[{self.role}] Arm is not connected")
         import torch
         action = {"action": torch.tensor(target, dtype=torch.float32)}
         self._robot.send_action(action)
