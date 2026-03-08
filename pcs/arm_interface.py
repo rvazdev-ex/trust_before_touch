@@ -201,7 +201,7 @@ class LeRobotArmInterface(ArmInterface):
     def connect(self) -> None:
         if config := self.config:
             if config.role == "leader":
-                from lerobot.robots.so_leader import SO101Leader, SO101LeaderConfig
+                from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
                 robot_cfg = SO101LeaderConfig(port=config.port, id=f"pcs_{config.role}")
                 self._robot = SO101Leader(robot_cfg)
             else:
