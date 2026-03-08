@@ -66,7 +66,7 @@ Responses are evaluated with three weighted sub-scores:
 |-----------|--------|----------|
 | **Trajectory** | 50% | Joint position accuracy vs. expected waypoints (normalized RMSE with exponential decay) |
 | **Timing** | 30% | Whether waypoints/taps/holds were reached within acceptable time windows |
-| **Visual** | 20% | Object presence detection via wrist camera |
+| **Visual** | 20% | Wrist-camera object presence + physical watermark micro-motion liveness |
 
 All weights and thresholds are configurable in [`config.py`](config.py).
 
@@ -176,6 +176,51 @@ The `MockArmInterface` provides full software simulation:
 - Synthetic camera frames with green-blob object detection
 - Physical watermark demo: intentional red marker servo micro-movements for verifier-camera liveness checks
 - Deterministic enough for testing, noisy enough to be realistic
+
+### Watermarking Demo (Full Details)
+
+The mock camera pipeline includes a **built-in visual watermark liveness signal** so the verifier can distinguish a physically plausible live stream from a static or replay-like signal.
+
+#### What is the watermark?
+
+- A tiny **red patch** is injected into each synthetic verifier frame.
+- Frame resolution is **120×160 (BGR)** with a grey background and a green object blob.
+- The watermark patch size is **9×9 px** (`WATERMARK_PIXELS = 4`, i.e. radius-style indexing around a center point).
+
+#### How it moves
+
+- The watermark center follows a sinusoidal micro-orbit near the upper-right region of the frame.
+- Base oscillation frequency is **4 Hz** in mock mode.
+- Motion amplitude is adaptive:
+  - Minimum about **2 px**.
+  - Increases with average servo tracking error (difference between target and simulated joints), up to roughly **4 px**.
+- This couples visual movement to arm dynamics, making the signal look "physically linked" instead of perfectly synthetic.
+
+#### How the verifier scores it
+
+During VERIFY, the verifier:
+
+1. Thresholds each frame for red-dominant pixels (`R > 180`, `G < 80`, `B < 80`).
+2. Computes the watermark centroid when detected.
+3. Tracks centroid displacements across frames.
+4. Produces a watermark score from:
+   - **Move strength** (mean speed), and
+   - **Temporal variation** (speed standard deviation).
+
+If there are too few valid frames/detections, the watermark score falls back to 0 for safety.
+
+#### How watermarking affects trust
+
+- The visual subsystem first computes classic object-presence confidence.
+- Then it blends that with watermark dynamics:
+
+  - `visual = 0.75 * visual_presence + 0.25 * watermark_micromotion`
+
+- That visual result is then weighted by `W_VISUAL = 0.20` in the final trust score.
+
+#### Important note
+
+This watermarking flow is currently implemented in the **mock/simulation path** as a demo of physical-liveness ideas. It is intended as a reference design that can be ported to real camera streams (for example, using a real fiducial/LED marker, challenge-conditioned motion signatures, or camera-IMU cross-checking).
 
 ---
 
